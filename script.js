@@ -545,3 +545,27 @@ function cargarActividades() {
     window.onload = function() {
       cargarAreas();
     }
+
+self.addEventListener('install', function(event) {
+  event.waitUntil(
+    caches.open('mi-cache-v1').then(function(cache) {
+      return cache.addAll([
+        '/',  // La raíz de tu app
+        '/formulario_agenda.html', // Archivo principal, si aplica
+        '/script.js',  // Puedes cachear también tus scripts
+        '/styles.css'  // Y estilos, por ejemplo
+        // Agrega aquí otros recursos estáticos que quieras cachear
+      ]);
+    })
+  );
+});
+
+self.addEventListener('fetch', function(event) {
+  event.respondWith(
+    caches.match(event.request).then(function(response) {
+      // Devuelve el recurso cacheado o, si no existe, realiza la solicitud a la red.
+      return response || fetch(event.request);
+    })
+  );
+});
+
