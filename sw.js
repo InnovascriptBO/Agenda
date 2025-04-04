@@ -1,19 +1,18 @@
-self.addEventListener('install', function(event) {
-  event.waitUntil(
-    caches.open('mi-cache-v1').then(function(cache) {
-      return cache.addAll([
-        '/', // Asegúrate de tener la ruta raíz del sitio
-        '/formulario_agenda.html' // O el archivo principal de tu app, si aplica
-        // Agrega otros archivos estáticos que quieras cachear
-      ]);
-    })
-  );
+const CACHE_NAME = "app-v1";
+const ASSETS = [
+  '/',
+  '/index.html',
+  '/styles.css',
+  '/manifest.json',
+  '/sw.js',
+  'assets/',
+  // Añade todos los recursos locales y externos
+];
+
+self.addEventListener("install", (e) => {
+  e.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS));
 });
 
-self.addEventListener('fetch', function(event) {
-  event.respondWith(
-    caches.match(event.request).then(function(response) {
-      return response || fetch(event.request);
-    })
-  );
+self.addEventListener("fetch", (e) => {
+  e.respondWith(caches.match(e.request).then(res => res || fetch(e.request)));
 });
