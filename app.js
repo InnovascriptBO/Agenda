@@ -1,12 +1,80 @@
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('?file=sw')
-    .then(function(registration) {
-      console.log('Service Worker registrado con éxito:', registration.scope);
-    })
-    .catch(function(error) {
-      console.error('Error al registrar el Service Worker:', error);
-    });
+const API_URL = "https://script.google.com/macros/s/AKfycbylrk1ajPkZ7QI6e1ofKMUsHYtw149vfnCpTpp7fD2eyIgTd2cyn7NlXNjOpLnL68Jh7A/exec";
+
+// Ejemplo: Obtener áreas
+async function obtenerAreas() {
+  const response = await fetch(`${API_URL}?action=obtenerAreas`);
+  return response.json();
 }
+
+// Ejemplo: Registrar actividad (POST)
+async function registrarActividad(datos) {
+  try {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      body: JSON.stringify(datos)
+    });
+    return await response.json();
+  } catch (error) {
+    // Guardar en IndexedDB si hay error
+    guardarOffline(datos);
+    return { status: "offline", message: "Datos guardados localmente" };
+  }
+}
+
+// Función para guardar datos offline
+function guardarOffline(datos) {
+  // Usar IndexedDB o localStorage
+  const pendientes = JSON.parse(localStorage.getItem("pendientes") || []);
+  pendientes.push(datos);
+  localStorage.setItem("pendientes", JSON.stringify(pendientes));
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js') // Ruta relativa
+    .then(() => console.log('SW Registrado'))
+    .catch(err => console.log('Error SW:', err));
+}
+
+// Guardar registros offline
+async function guardarOffline(datos) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("offlineDB", 1);
+    
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      db.createObjectStore("pendientes", { autoIncrement: true });
+    };
+    
+    request.onsuccess = (e) => {
+      const db = e.target.result;
+      const tx = db.transaction("pendientes", "readwrite");
+      const store = tx.objectStore("pendientes");
+      store.add(datos);
+      resolve();
+    };
+    
+    request.onerror = reject;
+  });
+}
+
+// Sincronizar al recuperar conexión
+window.addEventListener("online", async () => {
+  const db = await indexedDB.open("offlineDB");
+  const tx = db.transaction("pendientes", "readwrite");
+  const store = tx.objectStore("pendientes");
+  const pendientes = await store.getAll();
+
+  pendientes.forEach(async (item) => {
+    try {
+      await google.script.run.registrarActividad(item);
+      await store.delete(item.id);
+    } catch (error) {
+      console.error("Error sincronizando:", error);
+    }
+  });
+});
+
+
 
     let areaUsuario = "";
     function showLoading() {
@@ -16,24 +84,37 @@ if ('serviceWorker' in navigator) {
       document.getElementById("loadingOverlay").style.display = "none";
     }
     /* Sección Calendario Anual: se carga solo al ingresar al tab */
-    function initCalendarioAnual() {
-      google.script.run.withSuccessHandler(function(area) {
-        areaUsuario = area;
-        let select = document.getElementById("areaCalendario");
-        select.innerHTML = "";
-        if (area) {
-          let option = document.createElement("option");
-          option.value = area;
-          option.textContent = area;
-          select.appendChild(option);
-        } else {
-          let option = document.createElement("option");
-          option.value = "";
-          option.textContent = "Área no detectada";
-          select.appendChild(option);
-        }
-      }).obtenerAreaUsuarioActivo();
+    // Función modificada en el HTML (asegurar minúsculas)
+function initCalendarioAnual() {
+  google.script.run.withSuccessHandler(function(areaUsuario) {
+    let select = document.getElementById("areaCalendario");
+    select.innerHTML = "";
+    
+    if (!areaUsuario) {
+      select.innerHTML = '<option value="">Área no configurada en Acceso Supervisor</option>';
+      return;
     }
+    
+    // Normalizar a minúsculas y trim
+    const areaUsuarioNormalizada = areaUsuario.toLowerCase().trim();
+    
+    if (areaUsuarioNormalizada === "todas") {
+      const areasPermitidas = ["Sistemas", "Comercial", "GDH", "Legal", "Operaciones"];
+      areasPermitidas.forEach(area => {
+        const option = document.createElement("option");
+        option.value = area;
+        option.textContent = area;
+        select.appendChild(option);
+      });
+    } else {
+      const option = document.createElement("option");
+      option.value = areaUsuario;
+      option.textContent = areaUsuario;
+      select.appendChild(option);
+      select.disabled = true;
+    }
+  }).obtenerAreaUsuarioActivo();
+}
     document.addEventListener("DOMContentLoaded", function() {
       var calendarTab = document.getElementById("calendarioTab");
       calendarTab.addEventListener("shown.bs.tab", function(event) {
@@ -48,17 +129,27 @@ if ('serviceWorker' in navigator) {
       document.getElementById("pantallaMeses").style.display = "none";
       document.getElementById("pantallaDetalle").style.display = "block";
     }
-    function seleccionarMes(mes) {
-      if (!areaUsuario) {
-        alert("Área no detectada.");
+    // Modificar la función seleccionarMes para que use el valor actual del select
+function seleccionarMes(mes) {
+    const areaSeleccionada = document.getElementById("areaCalendario").value;
+    
+    if (!areaSeleccionada) {
+        alert("Seleccione un área válida.");
         return;
-      }
-      showLoading();
-      google.script.run.withSuccessHandler(function(detalle) {
-        hideLoading();
-        dibujarDetalleMes(mes, detalle);
-      }).obtenerResumenMensualDetalle(areaUsuario, mes);
     }
+
+    showLoading();
+    google.script.run
+        .withSuccessHandler(function(detalle) {
+            hideLoading();
+            dibujarDetalleMes(mes, detalle);
+        })
+        .withFailureHandler(function(error) {
+            hideLoading();
+            alert("Error al cargar el mes: " + error.message);
+        })
+        .obtenerResumenMensualDetalle(areaSeleccionada, mes);
+}
 
 
 function dibujarDetalleMes(mes, detalle) {
@@ -124,33 +215,24 @@ function dibujarDetalleMes(mes, detalle) {
           let label = dayNames[cell.getDay()] + " " + cell.getDate();
           let info = detalle[col][label];
 
-          if (info) {
+           if (info) {
             if (Array.isArray(info)) {
               let content = info.map(ev => {
+                // CASO 1: Es un objeto (sede - actividad)
                 if (typeof ev === "object" && ev.sede && ev.actividad) {
                   return `${ev.sede} - ${ev.actividad}`;
-                } else if (typeof ev === "string" && ev.includes(" - ")) {
-                  let parts = ev.split(" - ");
-                  let nombreExtraido = parts[0].trim();
-                  let actividad = parts.slice(1).join(" - ").trim();
-                  // Normalizamos para la comparación
-                  let nombreEvento = nombreExtraido.toLowerCase();
-                  let nombreFila = col.trim().toLowerCase();
-                  
-                  // Depuración (puedes comentar o eliminar después)
-                  console.log("Comparando:", { nombreFila, nombreEvento, original: ev });
-                  
-                  if (areaCal === "legal") {
-                    // Si el valor de la fila está vacío o es "no especificado", se muestra el evento
-                    if (!nombreFila || nombreFila === "no especificado") {
-                      return `${nombreExtraido} - ${actividad}`;
-                    }
-                    // Si hay un nombre en la fila, se compara con el extraído
-                    if (nombreFila.trim().toLowerCase() === nombreEvento.trim().toLowerCase()) {
-                      return `${nombreExtraido} - ${actividad}`;
-                    }
-                  } else {
-                    return actividad;
+                } 
+                // CASO 2: Es un string (actividad sin sede o Legal)
+                else if (typeof ev === "string") {
+                  // Solo para Legal procesamos "Nombre - Actividad"
+                  if (areaCal === "legal" && ev.includes(" - ")) {
+                    let [nombreExtraido, ...actividadParts] = ev.split(" - ");
+                    let actividad = actividadParts.join(" - ");
+                    return `${nombreExtraido} - ${actividad}`;
+                  } 
+                  // Para otras áreas, mostramos el string directo (sin "todas - ")
+                  else {
+                    return ev;
                   }
                 }
                 return ev.toString();
@@ -174,6 +256,19 @@ function dibujarDetalleMes(mes, detalle) {
   });
 
   document.getElementById("detalleMesContainer").innerHTML = html;
+
+  if (window.detalleInterval) clearInterval(window.detalleInterval);
+  window.detalleInterval = setInterval(() => {
+    if (!areaUsuario) return;
+    google.script.run
+      .withSuccessHandler(nuevoDetalle => {
+        if (JSON.stringify(nuevoDetalle) !== JSON.stringify(detalle)) {
+          dibujarDetalleMes(mes, nuevoDetalle); // Solo actualiza si hay cambios
+        }
+        hideLoading();
+      })
+      .obtenerResumenMensualDetalle(areaUsuario, mes);
+  }, 30000); // 30 segundos
 }
 
 
@@ -395,40 +490,75 @@ function dibujarDetalleMes(mes, detalle) {
         fecha: document.getElementById("fecha").value,
         actividad: document.getElementById("actividad").value
       };
+
+      if (!navigator.onLine) {
+    guardarOffline(datos)
+      .then(() => mostrarModal("Datos guardados localmente. Se sincronizarán con conexión."))
+      .catch(err => mostrarModal("Error guardando offline: " + err));
+    return;
+  }
+
+  google.script.run
+    .withSuccessHandler(/* ... */)
+    .registrarActividad(datos);
       google.script.run.withSuccessHandler(function(mensaje) {
         mostrarModal(mensaje);
         cargarReservas();
       }).registrarActividad(datos);
     }
+
     function cargarReservas() {
   let area = document.getElementById("area").value;
   const areasPermitidas = ["Sistemas", "Comercial", "GDH", "Legal", "Operaciones"];
-  // Si el área no es una de las permitidas, salimos sin calcular la tabla de reservas
+  
   if (!areasPermitidas.includes(area)) {
     document.getElementById("tablaReservas").style.display = "none";
     return;
   }
+  
   let sede = document.getElementById("sede").value;
   let fecha = document.getElementById("fecha").value;
+  
   if (!sede || !fecha) {
     document.getElementById("tablaReservas").style.display = "none";
     return;
   }
+  
   google.script.run.withSuccessHandler(function(reservas) {
+    hideLoading();
     let tbody = document.getElementById("tbodyReservas");
     tbody.innerHTML = "";
+    
     if (reservas.length === 0) {
       document.getElementById("tablaReservas").style.display = "none";
       return;
     }
+    
     reservas.forEach(function(reserva) {
       let tr = document.createElement("tr");
-      tr.innerHTML = "<td>" + reserva.colaborador + "</td>" +
-                     "<td>" + reserva.actividad + "</td>" +
-                     "<td>" + reserva.fecha + "</td>" +
-                     "<td>" + reserva.area + "</td>";
+      
+      // Para móviles (versión tarjeta)
+      if (window.innerWidth < 576) {
+        tr.innerHTML = `
+          <td data-label="Colaborador">${reserva.colaborador}</td>
+          <td data-label="Actividad">${reserva.actividad}</td>
+          <td data-label="Fecha">${reserva.fecha}</td>
+          <td class="d-none d-md-table-cell">${reserva.area}</td>
+        `;
+      } 
+      // Para tablets/desktop
+      else {
+        tr.innerHTML = `
+          <td>${reserva.colaborador}</td>
+          <td>${reserva.actividad}</td>
+          <td>${reserva.fecha}</td>
+          <td class="d-none d-md-table-cell">${reserva.area}</td>
+        `;
+      }
+      
       tbody.appendChild(tr);
     });
+    
     document.getElementById("tablaReservas").style.display = "table";
   }).obtenerReservasPorSedeTodas(sede, fecha);
 }
@@ -442,25 +572,26 @@ function mostrarModal(mensaje) {
 
 // Función única para cargar el Calendario Regional para un mes dado (ej. marzo)
 function cargarCalendarioRegional() {
-  let region = document.getElementById("regionSelect").value;
-  let mes = document.getElementById("regionMonthSelect").value;
-  if (!region) {
-    alert("Seleccione una región.");
+  const region = document.getElementById("regionSelect").value;
+  const mes = document.getElementById("regionMonthSelect").value;
+  
+  if (!region || !mes) {
+    alert("Seleccione región y mes");
     return;
   }
-  if (!mes) {
-    alert("Seleccione un mes.");
-    return;
-  }
+  
   showLoading();
-  google.script.run.withSuccessHandler(function(regionalResumen) {
-    hideLoading();
-    dibujarCalendarioRegional(regionalResumen, parseInt(mes));
-  }).obtenerResumenRegional(region, parseInt(mes));
+  google.script.run
+    .withSuccessHandler(data => {
+      hideLoading();
+      dibujarCalendarioRegional(data, mes);
+    })
+    .obtenerResumenRegional(region, mes);
 }
 
 // Función para dibujar la tabla del Calendario Regional, agrupada por semanas (lunes a viernes)
 function dibujarCalendarioRegional(regionalResumen, mes) {
+  if (window.intervalCalRegional) clearInterval(window.intervalCalRegional);
   let container = document.getElementById("regionalCalendarContainer");
   container.innerHTML = "";
   
@@ -480,17 +611,49 @@ function dibujarCalendarioRegional(regionalResumen, mes) {
   
   // Agrupar en semanas (grupos de 5 días consecutivos)
   let weeks = [];
-  for (let i = 0; i < diasHabiles.length; i += 5) {
-    weeks.push(diasHabiles.slice(i, i + 5));
-  }
+  let diasRestantes = diasHabiles.map(d => new Date(anio, mes - 1, d.day)); // Convertir a Dates
   
+  // Primera semana: desde el primer día hasta el viernes de esa semana
+  if (diasRestantes.length > 0) {
+    let firstWeek = [];
+    let firstDay = diasRestantes[0];
+    let friday = new Date(firstDay);
+    
+    // Buscar el viernes de la primera semana
+    while (friday.getDay() !== 5 && friday.getMonth() === firstDay.getMonth()) {
+      friday.setDate(friday.getDate() + 1);
+    }
+    
+    // Agregar días hasta el viernes encontrado
+    while (diasRestantes.length > 0 && diasRestantes[0] <= friday) {
+      let dia = diasRestantes.shift();
+      // Convertir de nuevo al formato original {label, day}
+      let originalDia = diasHabiles.find(d => d.day === dia.getDate());
+      firstWeek.push(originalDia);
+    }
+    weeks.push(firstWeek);
+  }
+
+  // Agrupar el resto en semanas completas
+  while (diasRestantes.length > 0) {
+    let week = [];
+    for (let i = 0; i < 5; i++) {
+      if (diasRestantes.length === 0) break;
+      let dia = diasRestantes.shift();
+      // Convertir de nuevo al formato original {label, day}
+      let originalDia = diasHabiles.find(d => d.day === dia.getDate());
+      week.push(originalDia);
+    }
+    weeks.push(week);
+  }
+
   // Obtener las sedes ordenadas
   let sedes = Object.keys(regionalResumen).sort();
   let html = "";
   
   weeks.forEach((week, idx) => {
     html += `<h5 class="mt-3">Semana ${idx + 1}</h5>`;
-    html += '<table class="calendar-table fadeIn">';
+    html += '<table class="regional-table fadeIn">';
     html += "<thead><tr><th>Sede</th>";
     week.forEach(dia => {
       html += `<th>${dia.label}</th>`;
@@ -522,7 +685,40 @@ function dibujarCalendarioRegional(regionalResumen, mes) {
   });
   
   container.innerHTML = html;
+  const actualizarCalendario = () => {
+    const region = document.getElementById("regionSelect").value;
+    const mesActual = document.getElementById("regionMonthSelect").value;
+    
+    if (!region || !mesActual) return;
+    
+    google.script.run
+      .withSuccessHandler(nuevosDatos => {
+        if (JSON.stringify(nuevosDatos) !== JSON.stringify(regionalResumen)) {
+          dibujarCalendarioRegional(nuevosDatos, mesActual);
+          mostrarNotificacion("¡Calendario actualizado!");
+        }
+      })
+      .withFailureHandler(error => console.error("Error actualizando:", error))
+      .obtenerResumenRegional(region, mesActual);
+  };
+
+  // Configurar intervalo de actualización
+  window.intervalCalRegional = setInterval(actualizarCalendario, 30000);
+  
+  // Actualizar inmediatamente al cambiar región/mes
+  document.getElementById("regionSelect").onchange = actualizarCalendario;
+  document.getElementById("regionMonthSelect").onchange = actualizarCalendario;
 }
+
+function mostrarNotificacion(mensaje) {
+  const toast = document.createElement("div");
+  toast.className = "actualizando-toast";
+  toast.textContent = mensaje;
+  document.body.appendChild(toast);
+  
+  setTimeout(() => toast.remove(), 2000);
+}
+
 
 function cargarActividades() {
   let area = document.getElementById("area").value;
@@ -542,42 +738,31 @@ function cargarActividades() {
   }).obtenerActividadesPorArea(area);
 }
 
-    window.onload = function() {
-      cargarAreas();
-    }
-
-self.addEventListener('install', function(event) {
-  event.waitUntil(
-    caches.open('mi-cache-v1').then(function(cache) {
-      return cache.addAll([
-        '/',  // La raíz de tu app
-        '/formulario_agenda.html', // Archivo principal, si aplica
-        '/script.js',  // Puedes cachear también tus scripts
-        '/styles.css'  // Y estilos, por ejemplo
-        // Agrega aquí otros recursos estáticos que quieras cachear
-      ]);
-    })
-  );
-});
-
-self.addEventListener('fetch', function(event) {
-  event.respondWith(
-    caches.match(event.request).then(function(response) {
-      // Devuelve el recurso cacheado o, si no existe, realiza la solicitud a la red.
-      return response || fetch(event.request);
-    })
-  );
-});
-
 let deferredPrompt;
 
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredPrompt = e;
-  document.getElementById('installBtn').style.display = 'block';
+  document.getElementById('installButton').classList.remove('d-none');
 });
 
-document.getElementById('installBtn').addEventListener('click', () => {
+document.getElementById('installButton').addEventListener('click', () => {
   deferredPrompt.prompt();
+  deferredPrompt.userChoice.then((choiceResult) => {
+    if (choiceResult.outcome === 'accepted') {
+      console.log('Usuario instaló la app');
+    }
+    deferredPrompt = null;
+  });
 });
 
+    window.onload = function() {
+      cargarAreas();
+    }
+
+    // Manejar cambios de tamaño de pantalla
+window.addEventListener('resize', function() {
+  if (document.getElementById("tablaReservas").style.display === "table") {
+    cargarReservas(); // Reprocesar tabla al cambiar tamaño
+  }
+});
