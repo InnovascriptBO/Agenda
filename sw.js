@@ -1,11 +1,9 @@
 const CACHE_NAME = "app-v1";
 const ASSETS = [
   '/',
-  '/index.html',
-  '/styles.css',
+  '/formulario_agenda.html',
   '/manifest.json',
   '/sw.js',
-  'assets/',
   // Añade todos los recursos locales y externos
 ];
 
